@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+      - name: Lint scripts
+        run: shellcheck install.sh uninstall.sh
+
+  validate-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenSSH server and generate host keys
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+          sudo ssh-keygen -A
+      - name: Isolate the test to our drop-in
+        run: |
+          sudo rm -f /etc/ssh/sshd_config.d/*.conf
+          if ! grep -Eq '^[[:space:]]*Include[[:space:]]+.*sshd_config\.d' /etc/ssh/sshd_config; then
+            sudo sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+          fi
+      - name: Install drop-in and check syntax
+        run: |
+          sudo install -Dm644 50-hardening.conf /etc/ssh/sshd_config.d/50-hardening.conf
+          sudo sshd -t
+      - name: Assert hardening is effective
+        run: |
+          eff="$(sudo sshd -T)"
+          for kv in \
+            "passwordauthentication no" \
+            "permitrootlogin prohibit-password" \
+            "kbdinteractiveauthentication no" \
+            "x11forwarding no" \
+            "clientaliveinterval 300" \
+            "pubkeyauthentication yes"; do
+            if ! printf '%s\n' "$eff" | grep -qix "$kv"; then
+              echo "FAIL: effective config does not honor '$kv'"
+              exit 1
+            fi
+          done
+          echo "All asserted directives are effective."
